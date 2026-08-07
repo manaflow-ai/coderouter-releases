@@ -41,4 +41,4 @@ jobs:
           [[ "$(tar -xOf dist/coderouter-npm-launcher.tgz package/package.json | jq -r .version)" == "$VERSION" ]]
       - run: npm install -g npm@11.5.1
       - name: Publish through npm trusted publishing
-        run: npm publish --provenance dist/coderouter-npm-launcher.tgz
+        run: npm publish --provenance ./dist/coderouter-npm-launcher.tgz
