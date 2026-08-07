@@ -35,6 +35,7 @@ jobs:
             --dir dist
           (cd dist && grep 'coderouter-.*\.whl$' SHA256SUMS | sha256sum --check)
           test "$(find dist -name 'coderouter-*.whl' | wc -l)" -ge 4
+          rm dist/SHA256SUMS
       - name: Publish through PyPI trusted publishing
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
