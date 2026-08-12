@@ -21,6 +21,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@54d9d780951028b24d0e45a428da74c512f3c6c5 # v7.4.0
       - name: Download immutable release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -35,3 +36,33 @@ jobs:
         run: |
           chmod 0755 dist/coderouter-linux-x64
           dist/coderouter-linux-x64 --version
+      - name: Smoke-test public package launchers
+        env:
+          VERSION: ${{ inputs.tag && inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${VERSION#v}"
+          for attempt in {1..20}; do
+            npm_version="$(timeout 30s \
+              npm view "coderouter@$VERSION" version 2>/dev/null || true)"
+            pypi_version="$(curl -fsSL \
+              --connect-timeout 10 \
+              --max-time 30 \
+              -H 'Cache-Control: no-cache' \
+              "https://pypi.org/pypi/coderouter/$VERSION/json?attempt=$attempt" \
+              | jq -r .info.version 2>/dev/null || true)"
+            if [[ "$npm_version" == "$VERSION" && "$pypi_version" == "$VERSION" ]]; then
+              break
+            fi
+            [[ "$attempt" -lt 20 ]] || {
+              echo "registries did not expose coderouter $VERSION in time" >&2
+              exit 1
+            }
+            sleep 15
+          done
+          npm_config_cache="$RUNNER_TEMP/npm-cache" \
+            npx --yes "coderouter@$VERSION" --version \
+            | grep -Fx "coderouter $VERSION"
+          UV_CACHE_DIR="$RUNNER_TEMP/uv-cache" \
+            uvx --from "coderouter==$VERSION" coderouter --version \
+            | grep -Fx "coderouter $VERSION"
