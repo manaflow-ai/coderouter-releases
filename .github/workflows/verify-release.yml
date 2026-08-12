@@ -43,10 +43,13 @@ jobs:
           set -euo pipefail
           VERSION="${VERSION#v}"
           for attempt in {1..20}; do
-            npm_version="$(npm view coderouter version 2>/dev/null || true)"
+            npm_version="$(timeout 30s \
+              npm view "coderouter@$VERSION" version 2>/dev/null || true)"
             pypi_version="$(curl -fsSL \
+              --connect-timeout 10 \
+              --max-time 30 \
               -H 'Cache-Control: no-cache' \
-              "https://pypi.org/pypi/coderouter/json?attempt=$attempt" \
+              "https://pypi.org/pypi/coderouter/$VERSION/json?attempt=$attempt" \
               | jq -r .info.version 2>/dev/null || true)"
             if [[ "$npm_version" == "$VERSION" && "$pypi_version" == "$VERSION" ]]; then
               break
