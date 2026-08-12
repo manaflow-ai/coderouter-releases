@@ -64,5 +64,5 @@ jobs:
             npx --yes "coderouter@$VERSION" --version \
             | grep -Fx "coderouter $VERSION"
           UV_CACHE_DIR="$RUNNER_TEMP/uv-cache" \
-            uvx --from "coderouter==$VERSION" coderouter --version \
+            uvx "coderouter==$VERSION" --version \
             | grep -Fx "coderouter $VERSION"
