@@ -12,7 +12,10 @@ permissions: {}
 
 jobs:
   publish:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # npm rejects provenance bundles from self-hosted-class runners
+    # ("Only \"github-hosted\" runners are supported when publishing with
+    # provenance"), so this one job stays on a GitHub-hosted runner.
+    runs-on: ubuntu-latest
     environment: npm-coderouter
     permissions:
       contents: read
