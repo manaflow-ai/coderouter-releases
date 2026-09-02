@@ -15,9 +15,21 @@ permissions: {}
 jobs:
   verify:
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
+      - id: release
+        name: Select release
+        env:
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "release tag must use vX.Y.Z" >&2
+            exit 1
+          }
+          printf 'tag=%s\nversion=%s\n' "$TAG" "${TAG#v}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
@@ -25,44 +37,119 @@ jobs:
       - name: Download immutable release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
           mkdir dist
           gh release download "$TAG" --dir dist
           (cd dist && sha256sum --check SHA256SUMS)
-          jq -e --arg version "${TAG#v}" '.version == $version' dist/manifest.json
+          jq -e --arg version "$VERSION" '
+            .version == $version and
+            .source_tag == ("coderouter-v" + $version) and
+            (.source_commit | test("^[0-9a-f]{40}$"))
+          ' dist/manifest.json
+          manifest_linux_sha="$(jq -er '.binaries["coderouter-linux-x64"]' dist/manifest.json)"
+          [[ "$manifest_linux_sha" == "$(sha256sum dist/coderouter-linux-x64 | cut -d' ' -f1)" ]]
+          test -f "dist/coderouter-$VERSION-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+          test -f dist/coderouter-npm-launcher.tgz
       - name: Smoke-test Linux binary
-        run: |
-          chmod 0755 dist/coderouter-linux-x64
-          dist/coderouter-linux-x64 --version
-      - name: Smoke-test public package launchers
         env:
-          VERSION: ${{ inputs.tag && inputs.tag || github.event.release.tag_name }}
+          VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${VERSION#v}"
+          chmod 0755 dist/coderouter-linux-x64
+          [[ "$(dist/coderouter-linux-x64 --version)" == "coderouter $VERSION" ]]
+      - name: Smoke-test public package launchers
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == x86_64 ]]
+          identity_script=.github/scripts/verify-package-identity.sh
+          expected_wheel="coderouter-$VERSION-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+          expected_npm_sha="$(sha256sum dist/coderouter-npm-launcher.tgz | cut -d' ' -f1)"
+          expected_wheel_sha="$(sha256sum "dist/$expected_wheel" | cut -d' ' -f1)"
+          grep -Fqx "$expected_npm_sha  coderouter-npm-launcher.tgz" dist/SHA256SUMS
+          grep -Fqx "$expected_wheel_sha  $expected_wheel" dist/SHA256SUMS
+          npm_metadata="$RUNNER_TEMP/coderouter-npm-metadata.json"
+          pypi_metadata="$RUNNER_TEMP/coderouter-pypi-metadata.json"
+          npm_package="$RUNNER_TEMP/coderouter-npm-package.json"
+          tar -xOf dist/coderouter-npm-launcher.tgz package/package.json > "$npm_package"
+          npm_url=""
+          pypi_url=""
           for attempt in {1..20}; do
-            npm_version="$(timeout 30s \
-              npm view "coderouter@$VERSION" version 2>/dev/null || true)"
-            pypi_version="$(curl -fsSL \
+            npm_tmp="$npm_metadata.$attempt"
+            pypi_tmp="$pypi_metadata.$attempt"
+            curl -fsSL \
               --connect-timeout 10 \
               --max-time 30 \
+              --max-filesize 1048576 \
+              -H 'Cache-Control: no-cache' \
+              "https://registry.npmjs.org/coderouter/$VERSION" \
+              -o "$npm_tmp" || true
+            curl -fsSL \
+              --connect-timeout 10 \
+              --max-time 30 \
+              --max-filesize 1048576 \
               -H 'Cache-Control: no-cache' \
               "https://pypi.org/pypi/coderouter/$VERSION/json?attempt=$attempt" \
-              | jq -r .info.version 2>/dev/null || true)"
-            if [[ "$npm_version" == "$VERSION" && "$pypi_version" == "$VERSION" ]]; then
+              -o "$pypi_tmp" || true
+            [[ -s "$npm_tmp" ]] && mv "$npm_tmp" "$npm_metadata" || true
+            [[ -s "$pypi_tmp" ]] && mv "$pypi_tmp" "$pypi_metadata" || true
+            if [[ -s "$npm_metadata" && -s "$pypi_metadata" ]] \
+              && "$identity_script" "$VERSION" "$npm_metadata" "$pypi_metadata" \
+                "$npm_package" "$expected_wheel_sha"; then
+              npm_url="$(jq -er '.dist.tarball' "$npm_metadata")"
+              pypi_url="$(jq -er --arg wheel "$expected_wheel" \
+                '.urls[] | select(.packagetype == "bdist_wheel" and .filename == $wheel) | .url' \
+                "$pypi_metadata")"
               break
             fi
             [[ "$attempt" -lt 20 ]] || {
-              echo "registries did not expose coderouter $VERSION in time" >&2
+              echo "registries did not expose the verified coderouter $VERSION artifacts in time" >&2
               exit 1
             }
             sleep 15
           done
+          npm_artifact="$RUNNER_TEMP/coderouter-$VERSION.tgz"
+          wheel_artifact="$RUNNER_TEMP/$expected_wheel"
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            --connect-timeout 10 --max-time 60 --max-filesize 67108864 \
+            "$npm_url" -o "$npm_artifact"
+          printf '%s  %s\n' "$expected_npm_sha" "$npm_artifact" | sha256sum --check >/dev/null
+          tar -xOf "$npm_artifact" package/package.json \
+            | jq -e --arg version "$VERSION" \
+              '.name == "coderouter" and .version == $version and
+               .bin.coderouter == "bin/coderouter.js" and .bin.cr == "bin/coderouter.js"' >/dev/null
+          curl -fsSL --proto '=https' --tlsv1.2 \
+            --connect-timeout 10 --max-time 60 --max-filesize 67108864 \
+            "$pypi_url" -o "$wheel_artifact"
+          printf '%s  %s\n' "$expected_wheel_sha" "$wheel_artifact" | sha256sum --check >/dev/null
+          mapfile -t metadata_paths < <(
+            unzip -Z1 "$wheel_artifact" | grep -E '^[^/]+\.dist-info/METADATA$'
+          )
+          [[ "${#metadata_paths[@]}" -eq 1 ]]
+          unzip -p "$wheel_artifact" "${metadata_paths[0]}" \
+            | awk -v version="$VERSION" '
+                /^Name: / { name = $0 }
+                /^Version: / { release = $0 }
+                END { exit !(name == "Name: coderouter" && release == "Version: " version) }
+              '
           npm_config_cache="$RUNNER_TEMP/npm-cache" \
+          npm_config_registry=https://registry.npmjs.org \
+          npm_config_ignore_scripts=true \
             npx --yes "coderouter@$VERSION" --version \
             | grep -Fx "coderouter $VERSION"
-          UV_CACHE_DIR="$RUNNER_TEMP/uv-cache" \
-            uvx coderouter@latest --version \
+          npm_config_cache="$RUNNER_TEMP/npm-cache" \
+          npm_config_registry=https://registry.npmjs.org \
+          npm_config_ignore_scripts=true \
+            npm exec --yes --package "$npm_artifact" -- coderouter --version \
+            | grep -Fx "coderouter $VERSION"
+          UV_NO_CONFIG=1 UV_CACHE_DIR="$RUNNER_TEMP/uv-cache" \
+            uvx --refresh --index-url https://pypi.org/simple \
+              --from "coderouter==$VERSION" coderouter --version \
+            | grep -Fx "coderouter $VERSION"
+          UV_NO_CONFIG=1 UV_CACHE_DIR="$RUNNER_TEMP/uv-cache" \
+            uvx --from "$wheel_artifact" coderouter --version \
             | grep -Fx "coderouter $VERSION"
