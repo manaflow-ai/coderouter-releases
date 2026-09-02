@@ -12,28 +12,71 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: verify-release-${{ inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
+
 jobs:
   verify:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    name: Verify the published release
+    # Release events are read-only. Manual verification is limited to the
+    # protected main workflow so a feature branch cannot choose the code that
+    # runs against public registries.
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    # This job executes downloaded package launchers. Keep it on an ephemeral
+    # GitHub-hosted runner instead of a persistent third-party runner.
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
     steps:
+      - name: Pin the workflow source
+        env:
+          EXPECTED_WORKFLOW: verify-release.yml
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == manaflow-ai/coderouter-releases ]]
+          case "$GITHUB_EVENT_NAME" in
+            workflow_dispatch)
+              [[ "$GITHUB_REF" == refs/heads/main ]]
+              [[ "$GITHUB_REF_PROTECTED" == true ]]
+              [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/$EXPECTED_WORKFLOW@refs/heads/main" ]]
+              [[ "$GITHUB_WORKFLOW_SHA" == "$GITHUB_SHA" ]]
+              ;;
+            release)
+              [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/$EXPECTED_WORKFLOW@"* ]]
+              [[ "$GITHUB_REF" =~ ^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+              [[ "$GITHUB_REF_PROTECTED" == true ]]
+              ;;
+            *)
+              printf 'unexpected event: %s\n' "$GITHUB_EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+          [[ "$GITHUB_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
       - id: release
         name: Select release
         env:
           TAG: ${{ inputs.tag || github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
             echo "release tag must use vX.Y.Z" >&2
             exit 1
           }
           printf 'tag=%s\nversion=%s\n' "$TAG" "${TAG#v}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: false
+      - name: Verify release tag ancestry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: .github/scripts/verify-release-tag.sh "$VERSION"
       - name: Download immutable release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -43,6 +86,13 @@ jobs:
           set -euo pipefail
           mkdir dist
           gh release download "$TAG" --dir dist
+          awk '
+            NF != 2 || length($1) != 64 || $1 !~ /^[0-9a-fA-F]+$/ || index($2, "/") > 0 || $2 ~ /^-/ { exit 1 }
+            ++seen[$2] != 1 { exit 1 }
+          ' dist/SHA256SUMS || {
+            echo "malformed SHA256SUMS" >&2
+            exit 1
+          }
           (cd dist && sha256sum --check SHA256SUMS)
           jq -e --arg version "$VERSION" '
             .version == $version and
@@ -63,6 +113,12 @@ jobs:
       - name: Smoke-test public package launchers
         env:
           VERSION: ${{ steps.release.outputs.version }}
+          HOME: ${{ runner.temp }}/verify-home
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+          ACTIONS_RUNTIME_TOKEN: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
         run: |
           set -euo pipefail
           [[ "$(uname -m)" == x86_64 ]]
@@ -82,6 +138,7 @@ jobs:
             npm_tmp="$npm_metadata.$attempt"
             pypi_tmp="$pypi_metadata.$attempt"
             curl -fsSL \
+              --proto '=https' --proto-redir '=https' --tlsv1.2 \
               --connect-timeout 10 \
               --max-time 30 \
               --max-filesize 1048576 \
@@ -89,6 +146,7 @@ jobs:
               "https://registry.npmjs.org/coderouter/$VERSION" \
               -o "$npm_tmp" || true
             curl -fsSL \
+              --proto '=https' --proto-redir '=https' --tlsv1.2 \
               --connect-timeout 10 \
               --max-time 30 \
               --max-filesize 1048576 \
@@ -114,7 +172,7 @@ jobs:
           done
           npm_artifact="$RUNNER_TEMP/coderouter-$VERSION.tgz"
           wheel_artifact="$RUNNER_TEMP/$expected_wheel"
-          curl -fsSL --proto '=https' --tlsv1.2 \
+          curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
             --connect-timeout 10 --max-time 60 --max-filesize 67108864 \
             "$npm_url" -o "$npm_artifact"
           printf '%s  %s\n' "$expected_npm_sha" "$npm_artifact" | sha256sum --check >/dev/null
@@ -122,7 +180,7 @@ jobs:
             | jq -e --arg version "$VERSION" \
               '.name == "coderouter" and .version == $version and
                .bin.coderouter == "bin/coderouter.js" and .bin.cr == "bin/coderouter.js"' >/dev/null
-          curl -fsSL --proto '=https' --tlsv1.2 \
+          curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
             --connect-timeout 10 --max-time 60 --max-filesize 67108864 \
             "$pypi_url" -o "$wheel_artifact"
           printf '%s  %s\n' "$expected_wheel_sha" "$wheel_artifact" | sha256sum --check >/dev/null

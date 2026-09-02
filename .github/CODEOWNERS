@@ -1,0 +1,3 @@
+# Release workflows and verification helpers are the credential trust
+# boundary. Changes require review from a trusted release maintainer.
+/.github/** @austinywang @azooz2003-bit

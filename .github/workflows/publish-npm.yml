@@ -10,8 +10,16 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: publish-npm-${{ inputs.version }}
+  cancel-in-progress: false
+
 jobs:
   publish:
+    name: Publish the verified npm package
+    # The environment is also protected server-side. Keep this condition as a
+    # fail-closed guard for manual dispatches from feature branches.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     # npm rejects provenance bundles from self-hosted-class runners
     # ("Only \"github-hosted\" runners are supported when publishing with
     # provenance"), so this one job stays on a GitHub-hosted runner.
@@ -19,10 +27,23 @@ jobs:
     environment: npm-coderouter
     permissions:
       contents: read
-      id-token: write
+      id-token: write # npm trusted publishing exchanges this for a short-lived credential.
     steps:
+      - name: Require the protected workflow ref
+        env:
+          EXPECTED_WORKFLOW: publish-npm.yml
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+          [[ "$GITHUB_REPOSITORY" == manaflow-ai/coderouter-releases ]]
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$GITHUB_REF_PROTECTED" == true ]]
+          [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/$EXPECTED_WORKFLOW@refs/heads/main" ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_WORKFLOW_SHA" == "$GITHUB_SHA" ]]
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -34,14 +55,36 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           mkdir dist
-          gh release download "v$VERSION" \
-            --pattern coderouter-npm-launcher.tgz \
-            --pattern SHA256SUMS \
-            --dir dist
-          (cd dist && grep 'coderouter-npm-launcher.tgz$' SHA256SUMS | sha256sum --check)
-          [[ "$(tar -xOf dist/coderouter-npm-launcher.tgz package/package.json | jq -r .version)" == "$VERSION" ]]
-      - run: npm install -g npm@11.5.1
+          .github/scripts/verify-release-assets.sh npm "$VERSION" dist
+      - name: Select npm CLI version
+        run: |
+          set -euo pipefail
+          npm_tarball="$RUNNER_TEMP/npm-11.5.1.tgz"
+          curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --connect-timeout 10 --max-time 60 --max-filesize 20000000 \
+            https://registry.npmjs.org/npm/-/npm-11.5.1.tgz -o "$npm_tarball"
+          actual_integrity="$(node -e '
+            const fs = require("fs");
+            const crypto = require("crypto");
+            const file = process.argv[1];
+            process.stdout.write(crypto.createHash("sha512").update(fs.readFileSync(file)).digest("base64"));
+            ' "$npm_tarball")"
+          [[ "$actual_integrity" == "Iy5vXZ55m8tIaSCz6bqQf9+W5XbPfoyURsgWLjOkFglqHTep6RDZqRj2sfYGeRyZvGu2HuJWm0lux0rxPQ29lQ==" ]]
+          npm_cli_dir="$RUNNER_TEMP/npm-cli"
+          mkdir "$npm_cli_dir"
+          tar -xzf "$npm_tarball" -C "$npm_cli_dir" \
+            --no-same-owner --no-same-permissions package
+          npm_cli="$npm_cli_dir/package/bin/npm-cli.js"
+          [[ -f "$npm_cli" && ! -L "$npm_cli" ]]
+          [[ "$(node "$npm_cli" --version)" == 11.5.1 ]]
       - name: Publish through npm trusted publishing
-        run: npm publish --provenance ./dist/coderouter-npm-launcher.tgz
+        env:
+          NPM_CONFIG_IGNORE_SCRIPTS: "true"
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+        run: |
+          set -euo pipefail
+          npm_cli="$RUNNER_TEMP/npm-cli/package/bin/npm-cli.js"
+          [[ -f "$npm_cli" && ! -L "$npm_cli" ]]
+          node "$npm_cli" publish --ignore-scripts --provenance ./dist/coderouter-npm-launcher.tgz
