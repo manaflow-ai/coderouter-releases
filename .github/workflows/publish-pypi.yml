@@ -10,16 +10,38 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: publish-pypi-${{ inputs.version }}
+  cancel-in-progress: false
+
 jobs:
   publish:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # Publishing only downloads already-built wheels. A GitHub-hosted runner
+    # avoids exposing the OIDC token to a persistent third-party runner.
+    runs-on: ubuntu-latest
+    # The environment is also protected server-side. Keep this condition as a
+    # fail-closed guard for manual dispatches from feature branches.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     environment: pypi-coderouter
     permissions:
       contents: read
       id-token: write
     steps:
+      - name: Require the protected workflow ref
+        env:
+          EXPECTED_WORKFLOW: publish-pypi.yml
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+          [[ "$GITHUB_REPOSITORY" == manaflow-ai/coderouter-releases ]]
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$GITHUB_REF_PROTECTED" == true ]]
+          [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/$EXPECTED_WORKFLOW@refs/heads/main" ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_WORKFLOW_SHA" == "$GITHUB_SHA" ]]
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Download verified wheels
         env:
@@ -27,15 +49,10 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           mkdir dist
-          gh release download "v$VERSION" \
-            --pattern 'coderouter-*.whl' \
-            --pattern SHA256SUMS \
-            --dir dist
-          (cd dist && grep 'coderouter-.*\.whl$' SHA256SUMS | sha256sum --check)
-          test "$(find dist -name 'coderouter-*.whl' | wc -l)" -ge 4
+          .github/scripts/verify-release-assets.sh pypi "$VERSION" dist
           rm dist/SHA256SUMS
+          rm dist/manifest.json
       - name: Publish through PyPI trusted publishing
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
