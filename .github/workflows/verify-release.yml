@@ -113,6 +113,12 @@ jobs:
       - name: Smoke-test public package launchers
         env:
           VERSION: ${{ steps.release.outputs.version }}
+          HOME: ${{ runner.temp }}/verify-home
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+          ACTIONS_RUNTIME_TOKEN: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
         run: |
           set -euo pipefail
           [[ "$(uname -m)" == x86_64 ]]
@@ -132,6 +138,7 @@ jobs:
             npm_tmp="$npm_metadata.$attempt"
             pypi_tmp="$pypi_metadata.$attempt"
             curl -fsSL \
+              --proto '=https' --proto-redir '=https' --tlsv1.2 \
               --connect-timeout 10 \
               --max-time 30 \
               --max-filesize 1048576 \
@@ -139,6 +146,7 @@ jobs:
               "https://registry.npmjs.org/coderouter/$VERSION" \
               -o "$npm_tmp" || true
             curl -fsSL \
+              --proto '=https' --proto-redir '=https' --tlsv1.2 \
               --connect-timeout 10 \
               --max-time 30 \
               --max-filesize 1048576 \
@@ -164,7 +172,7 @@ jobs:
           done
           npm_artifact="$RUNNER_TEMP/coderouter-$VERSION.tgz"
           wheel_artifact="$RUNNER_TEMP/$expected_wheel"
-          curl -fsSL --proto '=https' --tlsv1.2 \
+          curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
             --connect-timeout 10 --max-time 60 --max-filesize 67108864 \
             "$npm_url" -o "$npm_artifact"
           printf '%s  %s\n' "$expected_npm_sha" "$npm_artifact" | sha256sum --check >/dev/null
@@ -172,7 +180,7 @@ jobs:
             | jq -e --arg version "$VERSION" \
               '.name == "coderouter" and .version == $version and
                .bin.coderouter == "bin/coderouter.js" and .bin.cr == "bin/coderouter.js"' >/dev/null
-          curl -fsSL --proto '=https' --tlsv1.2 \
+          curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
             --connect-timeout 10 --max-time 60 --max-filesize 67108864 \
             "$pypi_url" -o "$wheel_artifact"
           printf '%s  %s\n' "$expected_wheel_sha" "$wheel_artifact" | sha256sum --check >/dev/null

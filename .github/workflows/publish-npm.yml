@@ -58,10 +58,10 @@ jobs:
           mkdir dist
           .github/scripts/verify-release-assets.sh npm "$VERSION" dist
       - name: Select npm CLI version
-        run: | # zizmor: ignore[adhoc-packages] exact digest-checked npm CLI tarball, offline and scripts disabled
+        run: |
           set -euo pipefail
           npm_tarball="$RUNNER_TEMP/npm-11.5.1.tgz"
-          curl -fsSL --proto '=https' --tlsv1.2 \
+          curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
             --connect-timeout 10 --max-time 60 --max-filesize 20000000 \
             https://registry.npmjs.org/npm/-/npm-11.5.1.tgz -o "$npm_tarball"
           actual_integrity="$(node -e '
@@ -69,13 +69,22 @@ jobs:
             const crypto = require("crypto");
             const file = process.argv[1];
             process.stdout.write(crypto.createHash("sha512").update(fs.readFileSync(file)).digest("base64"));
-          ' "$npm_tarball")"
+            ' "$npm_tarball")"
           [[ "$actual_integrity" == "Iy5vXZ55m8tIaSCz6bqQf9+W5XbPfoyURsgWLjOkFglqHTep6RDZqRj2sfYGeRyZvGu2HuJWm0lux0rxPQ29lQ==" ]]
-          npm install --global --offline --ignore-scripts --no-audit --no-fund "$npm_tarball"
-          [[ "$(npm --version)" == 11.5.1 ]]
+          npm_cli_dir="$RUNNER_TEMP/npm-cli"
+          mkdir "$npm_cli_dir"
+          tar -xzf "$npm_tarball" -C "$npm_cli_dir" \
+            --no-same-owner --no-same-permissions package
+          npm_cli="$npm_cli_dir/package/bin/npm-cli.js"
+          [[ -f "$npm_cli" && ! -L "$npm_cli" ]]
+          [[ "$(node "$npm_cli" --version)" == 11.5.1 ]]
       - name: Publish through npm trusted publishing
         env:
           NPM_CONFIG_IGNORE_SCRIPTS: "true"
           NPM_CONFIG_AUDIT: "false"
           NPM_CONFIG_FUND: "false"
-        run: npm publish --ignore-scripts --provenance ./dist/coderouter-npm-launcher.tgz
+        run: |
+          set -euo pipefail
+          npm_cli="$RUNNER_TEMP/npm-cli/package/bin/npm-cli.js"
+          [[ -f "$npm_cli" && ! -L "$npm_cli" ]]
+          node "$npm_cli" publish --ignore-scripts --provenance ./dist/coderouter-npm-launcher.tgz
