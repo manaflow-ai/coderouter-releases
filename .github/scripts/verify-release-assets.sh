@@ -19,6 +19,7 @@ kind=$1
 version=$2
 output_dir=$3
 repository=${GITHUB_REPOSITORY:-manaflow-ai/coderouter-releases}
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 case "$kind" in
   npm|pypi) ;;
@@ -50,47 +51,7 @@ esac
 }
 
 tag="v$version"
-release_json=$(gh api "repos/$repository/releases/tags/$tag")
-jq -e --arg tag "$tag" '
-  .tag_name == $tag and
-  .draft == false and
-  .prerelease == false and
-  ([.assets[].name] | length == (unique | length))
-' <<<"$release_json" >/dev/null || {
-  printf 'release is missing, mutable, draft, prerelease, or has duplicate assets: %s\n' "$tag" >&2
-  exit 1
-}
-
-# A release may use a lightweight or annotated tag. Resolve one annotated tag
-# layer and require the resulting commit to be in this repository.
-tag_json=$(gh api "repos/$repository/git/ref/tags/$tag")
-tag_type=$(jq -er '.object.type' <<<"$tag_json")
-tag_sha=$(jq -er '.object.sha | select(test("^[0-9a-f]{40}$"))' <<<"$tag_json")
-case "$tag_type" in
-  commit) ;;
-  tag)
-    annotated_json=$(gh api "repos/$repository/git/tags/$tag_sha")
-    jq -e '.object.type == "commit" and (.object.sha | test("^[0-9a-f]{40}$"))' <<<"$annotated_json" >/dev/null || {
-      printf 'release tag does not resolve to a commit: %s\n' "$tag" >&2
-      exit 1
-    }
-    tag_sha=$(jq -er '.object.sha' <<<"$annotated_json")
-    ;;
-  *)
-    printf 'unsupported release tag object type: %s\n' "$tag_type" >&2
-    exit 1
-    ;;
-esac
-
-# Publishing a tag that is not an ancestor of protected main would allow a
-# separately prepared artifact to bypass review of the release source.
-# Compare from protected main to the candidate tag. A tag that is behind main
-# is an ancestor; a tag that diverges or advances beyond main is rejected.
-comparison_json=$(gh api "repos/$repository/compare/main...$tag")
-jq -e '.status == "behind" or .status == "identical"' <<<"$comparison_json" >/dev/null || {
-  printf 'release tag is not an ancestor of main: %s (%s)\n' "$tag" "$tag_sha" >&2
-  exit 1
-}
+"$script_dir/verify-release-tag.sh" "$version"
 
 download_assets=(
   SHA256SUMS

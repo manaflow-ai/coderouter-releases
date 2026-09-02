@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   publish:
+    name: Publish the verified npm package
     # The environment is also protected server-side. Keep this condition as a
     # fail-closed guard for manual dispatches from feature branches.
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
@@ -26,7 +27,7 @@ jobs:
     environment: npm-coderouter
     permissions:
       contents: read
-      id-token: write
+      id-token: write # npm trusted publishing exchanges this for a short-lived credential.
     steps:
       - name: Require the protected workflow ref
         env:

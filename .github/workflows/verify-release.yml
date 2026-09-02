@@ -18,6 +18,7 @@ concurrency:
 
 jobs:
   verify:
+    name: Verify the published release
     # Release events are read-only. Manual verification is limited to the
     # protected main workflow so a feature branch cannot choose the code that
     # runs against public registries.
@@ -44,6 +45,8 @@ jobs:
               ;;
             release)
               [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/$EXPECTED_WORKFLOW@"* ]]
+              [[ "$GITHUB_REF" =~ ^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+              [[ "$GITHUB_REF_PROTECTED" == true ]]
               ;;
             *)
               printf 'unexpected event: %s\n' "$GITHUB_EVENT_NAME" >&2
@@ -69,6 +72,11 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: false
+      - name: Verify release tag ancestry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: .github/scripts/verify-release-tag.sh "$VERSION"
       - name: Download immutable release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,6 +86,13 @@ jobs:
           set -euo pipefail
           mkdir dist
           gh release download "$TAG" --dir dist
+          awk '
+            NF != 2 || length($1) != 64 || $1 !~ /^[0-9a-fA-F]+$/ || index($2, "/") > 0 || $2 ~ /^-/ { exit 1 }
+            ++seen[$2] != 1 { exit 1 }
+          ' dist/SHA256SUMS || {
+            echo "malformed SHA256SUMS" >&2
+            exit 1
+          }
           (cd dist && sha256sum --check SHA256SUMS)
           jq -e --arg version "$VERSION" '
             .version == $version and

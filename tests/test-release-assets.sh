@@ -62,7 +62,15 @@ if [[ "$1" == api ]]; then
       printf '{"tag_name":"v0.3.1","draft":false,"prerelease":false,"assets":[{"name":"SHA256SUMS"},{"name":"manifest.json"},{"name":"coderouter-npm-launcher.tgz"},{"name":"coderouter-0.3.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"}]}'
       ;;
     repos/manaflow-ai/coderouter-releases/git/ref/tags/*)
-      printf '{"ref":"refs/tags/v0.3.1","object":{"type":"commit","sha":"0123456789012345678901234567890123456789"}}'
+      if [[ "${CODEROUTER_TAG_TYPE:-commit}" == tag ]]; then
+        printf '{"ref":"refs/tags/v0.3.1","object":{"type":"tag","sha":"abcdefabcdefabcdefabcdefabcdefabcdefabcd"}}'
+      else
+        printf '{"ref":"refs/tags/v0.3.1","object":{"type":"commit","sha":"0123456789012345678901234567890123456789"}}'
+      fi
+      ;;
+    repos/manaflow-ai/coderouter-releases/git/tags/*)
+      [[ "${CODEROUTER_TAG_TYPE:-commit}" == tag ]]
+      printf '{"object":{"type":"commit","sha":"0123456789012345678901234567890123456789"}}'
       ;;
     repos/manaflow-ai/coderouter-releases/compare/*)
       printf '{"status":"%s"}' "${CODEROUTER_COMPARE_STATUS:-behind}"
@@ -101,10 +109,13 @@ chmod 0755 "$work/bin/gh"
 
 run_verify() {
   local kind=$1
+  local tag_type=${2:-commit}
   local out="$work/dist-$kind"
+  [[ "$tag_type" == commit ]] || out="$out-$tag_type"
   mkdir "$out"
   CODEROUTER_FIXTURE="$fixture" \
   CODEROUTER_COMPARE_STATUS=behind \
+  CODEROUTER_TAG_TYPE="$tag_type" \
   GITHUB_REPOSITORY=manaflow-ai/coderouter-releases \
   GH_TOKEN=test-token \
   PATH="$work/bin:$PATH" \
@@ -113,6 +124,7 @@ run_verify() {
 
 run_verify npm
 run_verify pypi
+run_verify npm tag
 
 if GITHUB_REPOSITORY=manaflow-ai/coderouter-releases GH_TOKEN=test-token \
   PATH="$work/bin:$PATH" "$script" npm 01.2.3 "$work/bad-version"; then

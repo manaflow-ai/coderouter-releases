@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   publish:
+    name: Publish the verified PyPI wheels
     # Publishing only downloads already-built wheels. A GitHub-hosted runner
     # avoids exposing the OIDC token to a persistent third-party runner.
     runs-on: ubuntu-latest
@@ -25,7 +26,7 @@ jobs:
     environment: pypi-coderouter
     permissions:
       contents: read
-      id-token: write
+      id-token: write # PyPI trusted publishing exchanges this for a short-lived credential.
     steps:
       - name: Require the protected workflow ref
         env:
