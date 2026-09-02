@@ -28,4 +28,40 @@ if sed "s/\"version\":\"$version\"/\"version\":\"0.0.0\"/" "$work/pypi.json" >"$
   exit 1
 fi
 
+# Keep the registry smoke test bound to the selected release. A fake uvx makes
+# both the argument contract and the version assertion deterministic offline.
+mkdir "$work/bin"
+cat >"$work/bin/uvx" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\0' "$@" >"$UVX_ARGS_FILE"
+printf 'coderouter %s\n' "$UVX_OUTPUT_VERSION"
+EOF
+chmod 0755 "$work/bin/uvx"
+expected_args=(
+  --refresh
+  --index-url https://pypi.org/simple
+  --from "coderouter==$version"
+  coderouter
+  --version
+)
+PATH="$work/bin:$PATH" \
+  UVX_ARGS_FILE="$work/uvx.args" \
+  UVX_OUTPUT_VERSION="$version" \
+  uvx --refresh --index-url https://pypi.org/simple \
+    --from "coderouter==$version" coderouter --version \
+    | grep -Fx "coderouter $version"
+mapfile -d '' -t actual_args <"$work/uvx.args"
+[[ "${actual_args[*]}" == "${expected_args[*]}" ]]
+
+if PATH="$work/bin:$PATH" \
+  UVX_ARGS_FILE="$work/uvx.args" \
+  UVX_OUTPUT_VERSION=0.0.0 \
+  uvx --refresh --index-url https://pypi.org/simple \
+    --from "coderouter==$version" coderouter --version \
+    | grep -Fx "coderouter $version"; then
+  printf 'mismatched uvx output was accepted\n' >&2
+  exit 1
+fi
+
 printf 'package identity fixtures passed\n'

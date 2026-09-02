@@ -147,7 +147,8 @@ jobs:
             npm exec --yes --package "$npm_artifact" -- coderouter --version \
             | grep -Fx "coderouter $VERSION"
           UV_NO_CONFIG=1 UV_CACHE_DIR="$RUNNER_TEMP/uv-cache" \
-            uvx --refresh --index-url https://pypi.org/simple "coderouter==$VERSION" --version \
+            uvx --refresh --index-url https://pypi.org/simple \
+              --from "coderouter==$VERSION" coderouter --version \
             | grep -Fx "coderouter $VERSION"
           UV_NO_CONFIG=1 UV_CACHE_DIR="$RUNNER_TEMP/uv-cache" \
             uvx --from "$wheel_artifact" coderouter --version \
