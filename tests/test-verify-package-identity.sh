@@ -30,11 +30,12 @@ fi
 
 # Keep the registry smoke test bound to the selected release. A fake uvx makes
 # both the argument contract and the version assertion deterministic offline.
+# Use newline-delimited arguments so this also runs with macOS Bash 3.2.
 mkdir "$work/bin"
 cat >"$work/bin/uvx" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\0' "$@" >"$UVX_ARGS_FILE"
+printf '%s\n' "$@" >"$UVX_ARGS_FILE"
 printf 'coderouter %s\n' "$UVX_OUTPUT_VERSION"
 EOF
 chmod 0755 "$work/bin/uvx"
@@ -51,8 +52,7 @@ PATH="$work/bin:$PATH" \
   uvx --refresh --index-url https://pypi.org/simple \
     --from "coderouter==$version" coderouter --version \
     | grep -Fx "coderouter $version"
-mapfile -d '' -t actual_args <"$work/uvx.args"
-[[ "${actual_args[*]}" == "${expected_args[*]}" ]]
+printf '%s\n' "${expected_args[@]}" | cmp -s - "$work/uvx.args"
 
 if PATH="$work/bin:$PATH" \
   UVX_ARGS_FILE="$work/uvx.args" \
