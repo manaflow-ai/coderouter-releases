@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Verify that a stable release tag is published, immutable in shape, and an
-# ancestor of protected main before any release asset is consumed.
+# Verify that a stable release is published, uniquely named, and tied to
+# protected main before any release asset is consumed.
 set -euo pipefail
 
 if [[ "$#" -ne 1 ]]; then
